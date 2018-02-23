@@ -139,7 +139,7 @@ class Results(object):
 
     sql_query = """
     SELECT pass_numbers,
-    %(groupby_param_name)s,    
+    %(groupby_param_name)s,
 
     %(metrics)s
 
@@ -348,7 +348,11 @@ class MetricTable(object):
       return "$%s \\cdot 10^{%s}$" % (base, int(exponent))
 
   @staticmethod
-  def extract_column(records_good_min_metric, records_bad_min_metric):
+  def extract_column(records_good_min_metric,
+                     records_bad_min_metric,
+                     records_good_min_metric_stddev=None,
+                     records_bad_min_metric_stddev=None,
+                     bold_col=True):
     """Formats a column of a LaTeX table.
 
     Given a numpy array of records corresponding to good-minumum experiment,
@@ -358,6 +362,10 @@ class MetricTable(object):
     Args:
       records_good_min_metric: numpy array of values from a "good" experiment.
       records_bad_min_metric: numpy array of values from a "bad" experiment.
+      records_good_min_metric_stddev: stddev of "good" experiment.
+      records_bad_min_metric_stddev: stddev of "bad" experiment.
+      bold_col: bolden max. and min. values in the "bad" column
+        otherwise, bolden max. value in the good/bad pair
 
     Returns:
       a string in LaTeX format.
@@ -367,13 +375,90 @@ class MetricTable(object):
     column = []
     for (i, z) in enumerate(
         zip(records_good_min_metric, records_bad_min_metric)):
-      if min_i_bad_min_metric == i or max_i_bad_min_metric == i:
-        zs = tuple(map(MetricTable.format_number, z))
-        column.append("%s & \\boldmath{%s}" % zs)
+
+      zs = map(MetricTable.format_number, z)
+
+      if records_bad_min_metric_stddev:
+        z_stddev = (
+            MetricTable.format_number(records_good_min_metric_stddev[i]),
+            MetricTable.format_number(records_bad_min_metric_stddev[i])
+        )
+
+        zs[0] = "%s $\\pm$ %s" % (zs[0], z_stddev[0])
+        zs[1] = "%s $\\pm$ %s" % (zs[1], z_stddev[1])
+
+      if bold_col:
+        if min_i_bad_min_metric == i or max_i_bad_min_metric == i:
+          column.append("%s & \\boldmath{%s}" % zs)
+        else:
+          column.append("%s & %s" % tuple(map(MetricTable.format_number, z)))
       else:
-        column.append("%s & %s" % tuple(map(MetricTable.format_number, z)))
+        if z[0] > z[1]:
+          column.append("\\boldmath{%s} & %s" % tuple(zs))
+        elif z[0] < z[1]:
+          column.append("%s & \\boldmath{%s}" % tuple(zs))
+        else:
+          column.append("%s & %s" % tuple(zs))
 
     return column
+
+  @staticmethod
+  def format_good_bad_table(corner_label, col_labels, row_labels,
+                            rows, print_full_doc):
+    """Formats a table with every column split for "good" and "bad" metric.
+
+    Args:
+      corner_label: a label of the top left corner.
+      col_labels: column labels.
+      row_labels: row labels.
+      rows: row content, must be 2 * # of columns.
+      print_full_doc: format full LaTeX doc., ready to compilation.
+
+    Returns:
+      LaTeX formatted string.
+    """
+    n_cols = len(col_labels)
+    table_lines = []
+
+    if print_full_doc:
+      table_lines.append(r"\documentclass{article}")
+      table_lines.append(
+          r"\usepackage[a4paper, landscape, margin=2mm]{geometry}")
+      table_lines.append(
+          r"\usepackage{amsmath,amssymb,amsfonts,amsthm,graphics}")
+      table_lines.append(r"\begin{document}")
+      table_lines.append(r"\begin{center}")
+
+    table_lines.append(r"\begin{table}")
+    table_lines.append(r"\scalebox{0.6}{")
+    table_lines.append(r"\begin{tabular}{%s|}" % ("|l" *
+                                                  (2 * (n_cols) + 1)))
+
+    heads = ([corner_label] + [
+        r"\multicolumn{2}{|p{3cm}|}{%s}" % col_label
+        for col_label in col_labels
+    ])
+
+    table_lines.append(r"\hline")
+    table_lines.append(" & ".join(heads) + r" \\")
+    table_lines.append(r"\hline")
+    table_lines.append(" & ".join([""] + ["Good", "Bad"] *
+                                  (n_cols)) + r"\\ ")
+    table_lines.append(r"\hline")
+    table_lines.append("\n".join([
+        " & ".join([row_labels[i]] + list(row)) + r" \\" + "\n\\hline"
+        for (i, row) in enumerate(rows)
+    ]))
+
+    table_lines.append(r"\end{tabular}")
+    table_lines.append(r"}")
+    table_lines.append(r"\end{table}")
+
+    if print_full_doc:
+      table_lines.append(r"\end{center}")
+      table_lines.append(r"\end{document}")
+
+    return "\n".join(table_lines)
 
   def print(self, metrics, normalize_by_margin=False, print_full_doc=False):
     """Formats a latex table for a given set of metrics.
@@ -497,6 +582,84 @@ class MetricTable(object):
       table_lines.append(r"\end{document}")
 
     return "\n".join(table_lines)
+
+
+class MetricVsParamTable(object):
+
+  def __init__(self, db_filename, dataset, network, groupby_param_name):
+    rs = Results(db_filename, mean_metrics=True)
+    """Constructor.
+
+
+    db_filename: path to sqlite3 database.
+    dataset: dataste name.
+    network: network name.
+    groupby_param_name: parameter to group results by.
+    network: network name.
+    """
+
+    self.records_good_min = rs.get_all_metrics(
+        dataset,
+        groupby_param_name,
+        bad_min=False,
+        extra_constraints="and network like '%s' " % network)
+
+    self.records_bad_min = rs.get_all_metrics(
+        dataset,
+        groupby_param_name,
+        bad_min=True,
+        extra_constraints="and network like '%s' " % network)
+
+    self.groupby_param_name = groupby_param_name
+    self.n_params = self.records_good_min["sq_margin"].shape[0]
+
+  def print(self, print_full_doc):
+
+    metrics = [
+        ("weight_l2_norms", "Weight L2 norm"),
+        ("path_l2_norms", "Path L2 norm"),
+        ("spectral_products", "Lip. const of the network"),
+        ("spectral_complexities", "Spectral complexity"),
+        ("hessian_top_sv_means", "Hessian spectral norm"),
+        ("sharpness_0.0005", "Sharpness\\newline (alpha=0.0005)"),
+        ("train_grad_norm", "Train grad. norm"),
+        ("train_error", "Train error"),
+        ("val_error", "Val. error"),
+        ("train_zero_one_error", "Train (0/1) error"),
+        ("val_zero_one_error", "Val. (0/1) error")
+    ]
+
+    columns = []
+    row_labels = [m[1] for m in metrics]
+    col_labels = [x[0] for x in self.records_good_min[self.groupby_param_name]]
+
+    for param_index in range(self.n_params):
+      col_metric_values_good = []
+      col_metric_values_bad = []
+
+      for (metric_name, _) in metrics:
+        metric_values_good = self.records_good_min[metric_name][param_index, -1]
+        metric_values_bad = self.records_bad_min[metric_name][param_index, -1]
+
+        col_metric_values_good.append(metric_values_good)
+        col_metric_values_bad.append(metric_values_bad)
+
+      column = MetricTable.extract_column(np.array(col_metric_values_good),
+                                          np.array(col_metric_values_bad),
+                                          bold_col=False)
+
+      columns.append(column)
+
+    rows = zip(*columns)
+
+    table_text = MetricTable.format_good_bad_table(
+        self.groupby_param_name.replace("_", " "),
+        col_labels,
+        row_labels,
+        rows,
+        print_full_doc)
+
+    return table_text
 
 
 class HessianVsMarginPlot(object):
